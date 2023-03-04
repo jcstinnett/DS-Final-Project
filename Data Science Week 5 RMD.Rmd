@@ -1,0 +1,176 @@
+---
+title: "Data Science Week 5 RMD"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+library(readr)
+
+```
+
+```{r Read In Data Sets}
+
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_US.csv", "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv", "time_series_covid19_deaths_global.csv")
+
+urls <- str_c(url_in, file_names)
+
+US_cases      <- read_csv(urls[1])
+global_cases  <- read_csv(urls[2])
+US_deaths     <- read_csv(urls[3])
+global_deaths <- read_csv(urls[4])
+
+```
+
+## Tidy Data
+
+The US and global data were transformed to a long format and only the dates, cases, admin2, which lists the city, province_state and combined_key values were kept since these were the only values I planned to work with. 
+
+```{r Tidy Data}
+US_cases_tidy <- US_cases %>% pivot_longer(cols = -c(UID, iso2, iso3, code3, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key), names_to = "date", values_to = "cases") %>% select(-c(UID, iso2, iso3, code3, FIPS, Country_Region, Lat, Long_))
+
+US_deaths_tidy <- US_deaths %>% pivot_longer(cols = -c(UID, iso2, iso3, code3, FIPS, Admin2, Province_State, Country_Region, Lat, Long_, Combined_Key, Population), names_to = "date", values_to = "cases") %>% select(-c(UID, iso2, iso3, code3, FIPS, Country_Region, Lat, Long_)) %>% rename(death_cases = cases)
+
+global_cases_tidy <- global_cases %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat, Long))
+
+global_deaths_tidy <- global_deaths %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat, Long)) %>% rename(death_cases = cases)
+
+global_all <- merge(global_cases_tidy, global_deaths_tidy, by = c("Province/State", "Country/Region", "date"))
+global_all <- global_all %>% rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>% mutate(date = mdy(date))
+
+US_all <- merge(US_cases_tidy, US_deaths_tidy, by = c("Admin2", "Province_State", "Combined_Key", "date"))
+US_all <- US_all %>% mutate(date = mdy(date))
+
+```
+
+## Data Summary
+
+After tidying the data, the global_all data includes the province or state, along with the country or region, date, reported cases and reported deaths. Likewise, the us_all data showcases the same thing, but is broken down by US locales.
+
+```{r data summary}
+summary(global_all)
+summary(US_all)
+
+```
+
+## Visualizations & Analysis: Comparing North American Countries
+
+I was curious to see how our North American counterparts' Covid cases and death rates compared to ours throughout the pandemic. Because the populations of the United States, Mexico and Canada are vastly different, I used the cases per thousand and deaths per thousand metrics. To do this, I needed all three countries' populations. With a quick Google search, I was able to obtain all three countries' populations as of 2021. These populations were: US - 331,900,000, Canada - 38,250,000 and Mexico - 126,700,000
+
+```{r NorthAmerican Cases and Deaths Per Million}
+
+US_population  <- 331900000
+Can_population <- 38250000
+Mex_population <- 126700000
+
+US_cases  <- US_all %>% group_by(date) %>% summarise(cases = sum(cases), death_cases = sum(death_cases))
+Can_cases <- global_all %>% filter(Country_Region == "Canada") %>% group_by(date) %>% summarise(cases = sum(cases), death_cases = sum(death_cases))
+Mex_cases <- global_all %>% filter(Country_Region == "Mexico") %>% group_by(date) %>% summarise(cases = sum(cases), death_cases = sum(death_cases))
+
+US_cases$Population  <- 331900000
+Can_cases$Population <- 38250000
+Mex_cases$Population <- 126700000
+
+US_cases$US.Cases.Per.Thousand    <- US_cases$cases*1000/US_cases$Population
+Can_cases$Can.Cases.Per.Thousand  <- Can_cases$cases*1000/Can_cases$Population
+Mex_cases$Mex.Cases.Per.Thousand  <- Mex_cases$cases*1000/Mex_cases$Population
+
+US_cases$US.Deaths.Per.Thousand   <- US_cases$death_cases*1000/US_cases$Population
+Can_cases$Can.Deaths.Per.Thousand <- Can_cases$death_cases*1000/Can_cases$Population
+Mex_cases$Mex.Deaths.Per.Thousand <- Mex_cases$death_cases*1000/Mex_cases$Population
+
+NorthAm_Cases <- merge(subset(US_cases, select = c(date, US.Cases.Per.Thousand)),
+                       subset(Can_cases, select = c(date, Can.Cases.Per.Thousand)),
+                       by = "date")
+NorthAm_Cases <- merge(NorthAm_Cases, subset(Mex_cases, select = c(date, Mex.Cases.Per.Thousand)), by = "date")
+
+NorthAm_Deaths <- merge(subset(US_cases, select = c(date, US.Deaths.Per.Thousand)),
+                       subset(Can_cases, select = c(date, Can.Deaths.Per.Thousand)),
+                       by = "date")
+NorthAm_Deaths <- merge(NorthAm_Deaths, subset(Mex_cases, select = c(date, Mex.Deaths.Per.Thousand)), by = "date")
+
+NorthAm_Cases_Prep  <- NorthAm_Cases %>% gather(key = "variable", value = "value", - date)
+NorthAm_Deaths_Prep <- NorthAm_Deaths %>% gather(key = "variable", value = "value", - date)
+
+
+```
+
+### Visualization 1 - Comparing Canadian, Mexican, & US COVID Cases Per Thousand By Day
+
+```{r VisualizationCasesPerMillionPerDay}
+
+ggplot(NorthAm_Cases_Prep, aes(x = date, y = value)) +
+  geom_line(aes(color = variable, linetype = variable)) +
+  scale_color_manual(values = c("darkred", "steelblue", "black")) +
+  labs(title = "North American Cases Per Thousand By Country By Day", x = "date", y = "Cases Per Thousand")
+
+```
+
+### Visualization 2 - Comparing Canadian, Mexican, & US COVID Deaths Per Thousand By Day
+
+```{r VisualizationDeathsPerMillionPerDay}
+
+ggplot(NorthAm_Deaths_Prep, aes(x = date, y = value)) +
+  geom_line(aes(color = variable, linetype = variable)) +
+  scale_color_manual(values = c("darkred", "steelblue", "black")) +
+  labs(title = "North American Deaths Per Thousand By Country By Day", x = "date", y = "Deaths Per Thousand")
+
+```
+
+## Analysis
+
+Looking at the cases per thousand, we can see that the U.S. had a much higher rate of COVID cases than Canada and Mexico, particularly as we moved into 2021 and onward. However, when we look at the deaths per thousand, Mexico kept a similar pace with the U.S. until early 2022 when the U.S. deaths per thousand began to outpace Mexico's deaths per thousand.
+
+## Model
+
+Comparing the linear models of each country when looking at cases per thousand and deaths per thousand we can see that against the predicted outcome all were higher in the mid-range than predicted value. As the cases per thousand increase, the US and Mexico both performed better than predicted on the deaths per thousand, whereas Canada performed slightly worse. The variances between countries and the predictions could be due to various factors like the extent of lock downs, age of the populations, density of the population, vaccination rates, etc. 
+
+```{r Models}
+
+NorthAm_All <- merge(NorthAm_Cases, NorthAm_Deaths, by = "date")
+
+us_mod <- lm(US.Deaths.Per.Thousand ~ US.Cases.Per.Thousand, data = NorthAm_All)
+summary(us_mod)
+
+NorthAm_All$US.Predict <- predict(us_mod)
+
+can_mod <- lm(Can.Deaths.Per.Thousand ~ Can.Cases.Per.Thousand, data = NorthAm_All)
+summary(can_mod)
+
+NorthAm_All$Can.Predict <- predict(can_mod)
+
+mex_mod <- lm(Mex.Deaths.Per.Thousand ~ Mex.Cases.Per.Thousand, data = NorthAm_All)
+summary(mex_mod)
+
+NorthAm_All$Mex.Predict <- predict(mex_mod)
+
+
+```
+
+```{r Graph Models}
+
+ggplot(NorthAm_All) + geom_point(aes(x = US.Cases.Per.Thousand, y = US.Deaths.Per.Thousand), color = "blue") + geom_point(aes(x = US.Cases.Per.Thousand, y = US.Predict), color = "red") +
+  labs(title = "US Linear Model vs. Actual")
+
+ggplot(NorthAm_All) + geom_point(aes(x = Can.Cases.Per.Thousand, y = Can.Deaths.Per.Thousand), color = "blue") + geom_point(aes(x = Can.Cases.Per.Thousand, y = Can.Predict), color = "red")+
+  labs(title = "Canadian Linear Model vs. Actual")
+
+ggplot(NorthAm_All) + geom_point(aes(x = Mex.Cases.Per.Thousand, y = Mex.Deaths.Per.Thousand), color = "blue") + geom_point(aes(x = Mex.Cases.Per.Thousand, y = Mex.Predict), color = "red")+
+  labs(title = "Mexican Linear Model vs. Actual")
+
+```
+
+
+## Bias
+
+Since this data is reported cases, there is a definite bias in that it's missing unreported cases. As the pandemic wore on and at home tests became available, people were able to confirm if they had COVID without seeing a medical provider. Because of this, it is safe to say that there are missing cases from the data set. 
+
+In addition, countries may not count COVID deaths in the same way. Some may include a death if COVID was a part of the reason the person died, others may count it only if it's the only factor. Because of this, it may not be an apples to apples comparison when looking at COVID deaths per thousand.
