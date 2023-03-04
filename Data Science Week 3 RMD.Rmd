@@ -1,0 +1,143 @@
+---
+title: "Data Science Course Week 3 Project"
+output:
+  html_document: default
+  pdf_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(lubridate)
+library(RColorBrewer)
+library(ggplot2)
+
+```
+
+## NYPD Shooting Data
+
+The NPYD data comes from the city of New York website and provides shooting data from January 1, 2006 to December 31, 2021 for all five boroughs. The data set includes the date and time of the shooting, information around the both the perpetrator's and the victim's age, race, and sex, the location where it occurred, and whether or not the shooting resulted in a murder.  
+
+```{r shooting data}
+
+nypd_data <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+```
+
+## Data Summary
+
+```{r summary data, eval=TRUE, echo=FALSE}
+
+nypd_data <- nypd_data %>%
+                mutate(OCCUR_DATE = mdy(OCCUR_DATE),
+                       # OCCUR_TIME = chron(times. = OCCUR_TIME),
+                       Year = year(OCCUR_DATE)) 
+summary(nypd_data)
+
+```
+
+## Dealing with Missing Data
+
+There are records with missing location description, perp demographics and victim demographics. If any analysis is to be performed around these characteristics, one can either filter out the records with missing data, or use a proxy value such as the average in place of the missing data value. For the modeling performed, I filtered out the records with missing data. 
+
+## Changes in Shooting Incidents & Murders Each Year
+
+### Chart 1: Year Over Year Changes in Shooting Incidents & Murders
+
+```{r Prep for Visualizations, eval=TRUE, echo=FALSE}
+ds_viz_murder <- nypd_data %>% 
+                    group_by(Year, STATISTICAL_MURDER_FLAG) %>% summarise("Total Flag" = n()) %>%
+                    pivot_wider(names_from = STATISTICAL_MURDER_FLAG, 
+                                values_from = "Total Flag") %>% rename(Murder = true, 
+                                                                       "No Murder"= false) %>%
+                    as.data.frame()
+
+ds_viz_murder$`Total Shootings`    <- ds_viz_murder$`No Murder` + ds_viz_murder$Murder
+
+ds_viz_murder$`Previous Shootings` <- lag(ds_viz_murder$`Total Shootings`, n = 1)
+ds_viz_murder$`Previous Shootings` <- ifelse(is.na(ds_viz_murder$`Previous Shootings`),
+                                             ds_viz_murder$`Total Shootings`,
+                                             ds_viz_murder$`Previous Shootings`)
+
+ds_viz_murder$`Previous Murders` <- lag(ds_viz_murder$Murder, n = 1)
+ds_viz_murder$`Previous Murders` <- ifelse(is.na(ds_viz_murder$`Previous Murders`),
+                                             ds_viz_murder$Murder,
+                                             ds_viz_murder$`Previous Murders`)
+
+ds_viz_murder$`Percent Change in Shootings` <- round((ds_viz_murder$`Total Shootings`/
+                                                        ds_viz_murder$`Previous Shootings` - 
+                                                        1)*100,2)
+ds_viz_murder$`Percent Change in Murders`   <- round((ds_viz_murder$Murder/
+                                                      ds_viz_murder$`Previous Murders` - 
+                                                      1)*100,2)
+ds_viz_murder$`Shootings Compared to 2006` <- round((ds_viz_murder$`Total Shootings`/2055 - 1) * 100, 2)
+ds_viz_murder$`Murders Compared to 2006`<- round((ds_viz_murder$Murder/445 - 1) * 100, 2)
+
+ds_murder <- ds_viz_murder %>%
+              dplyr::select(Year, `Percent Change in Shootings`, `Percent Change in Murders`) %>%
+              gather(key = "variable", value = "value", - Year)
+ds_murder_change <- ds_viz_murder %>%
+                      dplyr::select(Year, `Shootings Compared to 2006`, `Murders Compared to 2006`)%>% gather(key = "variable", value = "value", - Year)
+```
+
+```{r Visualization YOY Change, eval=TRUE, echo=FALSE}
+ggplot(ds_murder, aes(x = Year, y = value)) +
+  geom_line(aes(color = variable, linetype = variable)) +
+  scale_color_manual(values = c("darkred", "steelblue")) +
+  labs(title = "YOY % Change in Shootings & Murders", x = "Year", y = "Percent Change")
+
+```
+
+### Chart 2: Changes in Shooting Incidents & Murders Compared to Baseline
+
+```{r Visualization Compared to Baseline, eval=TRUE, echo=FALSE}
+
+ggplot(ds_murder_change, aes(x = Year, y = value)) +
+  geom_line(aes(color = variable, linetype = variable)) +
+  scale_color_manual(values = c("darkred", "steelblue")) +
+  labs(title = "% Change in Shootings & Murders Compared to Baseline Year (2006)", x = "Year", y = "Percent Change")
+
+
+```
+
+## Model: Logistic Regression of Survival
+
+Using the statistical murder flag as the source for whether or not the shooting resulted in a murder, we can pair it with the categorical factors such as month the shooting occurred, boro the shooting occurred in and the victim's age, sex and race to determine if the risk of death increases in a statistically significant way due to any of these factors. 
+
+```{r Logistic Regression Model}
+
+ds_model_prep <- nypd_data %>% select(OCCUR_DATE, BORO, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, STATISTICAL_MURDER_FLAG) %>% mutate(OCCUR_DATE = as.Date(OCCUR_DATE, format = "%m/%d/%Y")) %>% filter(VIC_AGE_GROUP != "UNKNOWN" & VIC_SEX != "U" & VIC_RACE != "UNKNOWN")
+
+ds_model_prep$murder.dummy  <- ifelse(ds_model_prep$STATISTICAL_MURDER_FLAG == "true", 1, 0)
+ds_model_prep$sex.factor    <- factor(ds_model_prep$VIC_SEX)
+ds_model_prep$month.factor  <- factor(month(ds_model_prep$OCCUR_DATE))
+ds_model_prep$age.factor    <- factor(ds_model_prep$VIC_AGE_GROUP)
+ds_model_prep$boro.factor   <- factor(ds_model_prep$BORO)
+ds_model_prep$race.factor   <- factor(ds_model_prep$VIC_RACE)
+
+ds_model <- ds_model_prep %>% select(c(murder.dummy, sex.factor, month.factor, age.factor, boro.factor, race.factor))
+
+mylogit <- glm(murder.dummy ~ sex.factor + month.factor + age.factor + boro.factor + race.factor, data = ds_model, family = "binomial")
+
+summary(mylogit)
+
+```
+
+## Analysis
+
+Based on the results of chart 1, changes in shooting incidents and murders tend to fluctuate from year to year. The largest year over year change in the data set for both shooting incidents and murders was between 2019 and 2020. Some years the murder rate change is higher than the shooting rate change and other years it flip-flops. However, in 2020 the percent change was similar for both.
+
+However if we then compare every year to our baseline year of data (2006), which is displayed in chart 2, we can see that while year over year changes seem to randomly fluctuate, there was an overall downward trend in both shooting incidents and murders since 2006. When we look at 2020's large increase witnessed in the year over year chart above, we can see that both metrics are still below 2006 levels, though they are beginning to climb back up closer to 2006. 
+
+When trying to determine if certain factors affect the likelihood of a shooting resulting in death, we can see in the output of the logistic regression that there are six factors that have statistically significant results. Having a shooting result in a murder is less likely to happen in August (month 8) than compared to January (month 1). Being in the age groups 18-24, 25-44, 45-64 and 65+ all increases the victim's chance of dying compared to the age group of <18. Finally, being shot in the boro of Manhattan decreases the risk of a shooting resulting in a murder when compared to the boro of the Bronx.
+
+## Bias
+
+This data set only shows the reported shootings. It's possible for there to be additional shootings resulting in injury that went unreported and therefore it's biased toward what the police had reported to them. In addition, there is a potential for bias in the perpetrator demographic data if the perpetrator is not actually known, but his/her description is being based off of eye witnesses.  
+
+My personal bias coming into the project was that I assumed the data would show that shootings have greatly increased. While that is true, it is also true that compared to 2006, shootings and shootings that result in death are still down. I was surprised to see this because of my preconceived notions. 
+
+
+
